@@ -1,0 +1,170 @@
+menu "WiFi Configuration"
+
+    config ESP_WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            SSID (network name) for the example to connect to.
+
+    config ESP_ENTERPRISE_CONNECT
+        bool "Connect using enterprise encryption"
+        default n
+        help
+            Choose this option to connect to network with enterprise encryption.
+
+    if !ESP_ENTERPRISE_CONNECT
+        config ESP_WIFI_PASSWORD
+            string "WiFi Password"
+            default "mypassword"
+            help
+                WiFi password (WPA or WPA2) to use for network.
+
+        choice ESP_WIFI_SAE_MODE
+            prompt "WPA3 SAE mode selection"
+            default ESP_WPA3_SAE_PWE_BOTH
+            help
+                Select mode for SAE as Hunt and Peck, H2E or both.
+            config ESP_WPA3_SAE_PWE_HUNT_AND_PECK
+                bool "HUNT AND PECK"
+            config ESP_WPA3_SAE_PWE_HASH_TO_ELEMENT
+                bool "H2E"
+            config ESP_WPA3_SAE_PWE_BOTH
+                bool "BOTH"
+        endchoice
+    
+        config ESP_WIFI_PW_ID
+            string "PASSWORD IDENTIFIER"
+            depends on  ESP_WPA3_SAE_PWE_HASH_TO_ELEMENT|| ESP_WPA3_SAE_PWE_BOTH
+            default ""
+            help
+                password identifier for SAE H2E
+
+        choice ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD
+            prompt "WiFi Scan auth mode threshold"
+            default ESP_WIFI_AUTH_WPA2_PSK
+            help
+                The weakest authmode to accept in the scan mode.
+                This value defaults to ESP_WIFI_AUTH_WPA2_PSK incase password is present and ESP_WIFI_AUTH_OPEN is used.
+                Please select ESP_WIFI_AUTH_WEP/ESP_WIFI_AUTH_WPA_PSK incase AP is operating in WEP/WPA mode.
+
+            config ESP_WIFI_AUTH_OPEN
+               bool "OPEN"
+            config ESP_WIFI_AUTH_WEP
+                bool "WEP"
+            config ESP_WIFI_AUTH_WPA_PSK
+                bool "WPA PSK"
+            config ESP_WIFI_AUTH_WPA2_PSK
+                bool "WPA2 PSK"
+            config ESP_WIFI_AUTH_WPA_WPA2_PSK
+                bool "WPA/WPA2 PSK"
+            config ESP_WIFI_AUTH_WPA3_PSK
+                bool "WPA3 PSK"
+            config ESP_WIFI_AUTH_WPA2_WPA3_PSK
+                bool "WPA2/WPA3 PSK"
+            config ESP_WIFI_AUTH_WAPI_PSK
+                bool "WAPI PSK"
+        endchoice
+    endif # !ESP_ENTERPRISE_CONNECT
+
+    if ESP_ENTERPRISE_CONNECT
+        choice
+            prompt "Enterprise configuration to be used"
+            default ESP_WIFI_WPA_WPA2_ENTERPRISE
+            config ESP_WIFI_WPA_WPA2_ENTERPRISE
+                bool "WPA_WPA2_ENT"
+            config ESP_WIFI_WPA3_ENTERPRISE
+                bool "WPA3_ENT"
+            config ESP_WIFI_WPA3_192BIT_ENTERPRISE
+                bool "WPA3_192BIT_ENT"
+                depends on IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32S3
+                select ESP_WIFI_GCMP_SUPPORT
+                select ESP_WIFI_GMAC_SUPPORT
+                select ESP_WIFI_SUITE_B_192
+        endchoice
+
+        if ESP_WIFI_WPA_WPA2_ENTERPRISE
+            config ESP_VALIDATE_SERVER_CERT
+                bool "Validate server"
+                default y
+                help
+                    Validate the servers' certificate using CA cert.
+        endif
+
+        if !ESP_WIFI_WPA_WPA2_ENTERPRISE
+            config ESP_VALIDATE_SERVER_CERT
+                default y
+        endif
+
+        config ESP_USE_DEFAULT_CERT_BUNDLE
+            bool "Use default cert bundle"
+            depends on ESP_VALIDATE_SERVER_CERT
+            default n
+            help
+                Use default CA certificate bundle for WPA enterprise connection
+
+        choice
+            prompt "EAP method for the example to use"
+            default ESP_EAP_METHOD_PEAP
+            config ESP_EAP_METHOD_TLS
+                bool "TLS"
+            config ESP_EAP_METHOD_PEAP
+                bool "PEAP"
+            config ESP_EAP_METHOD_TTLS
+                bool "TTLS"
+        endchoice
+
+        config ESP_EAP_METHOD
+            int
+            default 0 if ESP_EAP_METHOD_TLS
+            default 1 if ESP_EAP_METHOD_PEAP
+            default 2 if ESP_EAP_METHOD_TTLS
+
+        choice
+            prompt "Phase2 method for TTLS"
+            depends on ESP_EAP_METHOD_TTLS
+            default ESP_EAP_METHOD_TTLS_PHASE2_MSCHAPV2
+            config ESP_EAP_METHOD_TTLS_PHASE2_MSCHAPV2
+                bool "MSCHAPV2"
+            config ESP_EAP_METHOD_TTLS_PHASE2_MSCHAP
+                bool "MSCHAP"
+            config ESP_EAP_METHOD_TTLS_PHASE2_PAP
+                bool "PAP"
+            config ESP_EAP_METHOD_TTLS_PHASE2_CHAP
+                bool "CHAP"
+        endchoice
+
+        config ESP_EAP_METHOD_TTLS_PHASE_2
+            int
+            default 1 if ESP_EAP_METHOD_TTLS_PHASE2_MSCHAPV2
+            default 2 if ESP_EAP_METHOD_TTLS_PHASE2_MSCHAP
+            default 3 if ESP_EAP_METHOD_TTLS_PHASE2_PAP
+            default 4 if ESP_EAP_METHOD_TTLS_PHASE2_CHAP
+
+        config ESP_EAP_ID
+            string "EAP ID"
+            default "user@uwo.ca"
+            help
+                Identity in phase 1 of EAP procedure.
+
+        config ESP_EAP_USERNAME
+            string "EAP USERNAME"
+            depends on ESP_EAP_METHOD_PEAP || ESP_EAP_METHOD_TTLS
+            default "user"
+            help
+                Username for EAP method (PEAP and TTLS).
+
+        config ESP_EAP_PASSWORD
+            string "EAP PASSWORD"
+            depends on ESP_EAP_METHOD_PEAP || ESP_EAP_METHOD_TTLS
+            default "test11"
+            help
+                Password for EAP method (PEAP and TTLS).
+    endif # ESP_ENTERPRISE_CONNECT
+
+    config ESP_MAXIMUM_RETRY
+        int "Maximum retry"
+        default 5
+        help
+            Set the Maximum retry to avoid station reconnecting to the AP unlimited when the AP is really inexistent.
+
+endmenu

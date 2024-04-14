@@ -1,0 +1,126 @@
+<!DOCTYPE HTML>
+<html lang="en-ca">
+<head>
+  <title>BME280 Sensor</title>
+  <meta charset="UTF-8" name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <style>
+  html {
+    font-family: Arial, Helvetica, sans-serif;
+    text-align: center;
+  }
+  h1 {
+    font-size: 1.8rem;
+    color: white;
+  }
+  h2{
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #143642;
+  }
+  .topnav {
+    overflow: hidden;
+    background-color: #143642;
+  }
+  body {
+    margin: 0;
+  }
+  .content {
+    padding: 30px;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+  .card {
+    background-color: #F8F7F9;;
+    box-shadow: 2px 2px 12px 1px rgba(140,140,140,.5);
+    padding-top:10px;
+    padding-bottom:20px;
+  }
+  .button {
+    padding: 15px 50px;
+    font-size: 24px;
+    text-align: center;
+    outline: none;
+    color: #fff;
+    background-color: #4F2683;
+    border: none;
+    border-radius: 5px;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    -khtml-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: rgba(0,0,0,0);
+   }
+   
+   .button:active {
+     background-color: #4F2683;
+     box-shadow: 2 2px #CDCDCD;
+     transform: translateY(2px);
+   }
+   .state {
+     font-size: 1.5rem;
+     color:#8c8c8c;
+     font-weight: bold;
+   }
+   .update {
+     margin-top: 5px;
+     font-size: 1rem;
+     font-style: italic;
+     color: #9a9a9a;
+     font-weight: normal;
+   }
+  </style>
+
+</head>
+<body>
+  <div class="content">
+    <div class="card">
+      <p class="state">State: <span id="state">%STATE%</span></p>
+      <p><button id="button" class="button">Toggle</button></p>
+      <p class="state">Pressure: <span id="pres">%PRES%</span> kPa</p>
+      <p class="state">Temperature: <span id="temp">%TEMP%</span> &ordm;C</p>
+      <p class="state">Humidity: <span id="hum">%HUM%</span>&#37;</p>
+      <p class="update">Updated: <span id="time">%TIME%</span></p>
+    </div>
+  </div>
+<script>
+  var gateway = `ws://${window.location.hostname}/ws`;
+  var websocket;
+  var wscnt=0;
+  var toggle=0;
+  window.addEventListener('load', onLoad);
+
+  function initWs() {
+    websocket = new WebSocket(gateway);
+    websocket.onopen    = onOpen;
+    websocket.onclose   = onClose;
+    websocket.onmessage = onMessage;
+  }
+  function onOpen(event) {
+    console.log('Connection opened ' + (++wscnt));
+  }
+  function onClose(event) {
+    console.log('Connection closed ' + (--wscnt));
+    setTimeout(initWs, 2000);
+  }
+  function onMessage(event) {
+    console.log(event.data);
+    var res = JSON.parse(event.data);
+    document.getElementById('state').innerHTML = res.state;
+    document.getElementById('pres').innerHTML = res.pres.toFixed(2);
+    document.getElementById('temp').innerHTML = res.temp.toFixed(2);
+    document.getElementById('hum').innerHTML = res.hum.toFixed(2);
+    document.getElementById('time').innerHTML = res.time;
+  }
+  function onLoad(event) {
+    initWs();
+    document.getElementById('button').addEventListener('click', function() {
+    	websocket.send(++toggle);
+      console.log('button click ' + toggle);
+    });
+  }
+</script>
+</body>
+</html>

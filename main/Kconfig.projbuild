@@ -1,0 +1,65 @@
+menu "Example Configuration"
+
+    config UPDATE_INTERVAL
+        int "Update interval in seconds"
+        range 1 3600
+        default 5
+        help
+            The number of seconds to wait before updating the console output
+
+    config SYNC_TIME
+        bool "Sync time to SNTP server"
+        default y
+        help
+            Get current time from SNTP server
+
+    if SYNC_TIME
+        config SNTP_NUM_SERVERS
+            int "Number of SNTP servers to use"
+            range 1 3
+            default 1
+            help
+                Number of pool servers to connect with
+
+        config SNTP_TIME_SERVER1
+            string "SNTP server 1 name"
+            default "pool.ntp.org"
+            help
+                Hostname of the main SNTP server.
+
+        if SNTP_NUM_SERVERS > 1
+            config SNTP_TIME_SERVER2
+                string "SNTP server 2 name"
+                default "time1.google.com"
+                help
+                    Hostname of the secondary SNTP server.
+        endif
+
+        if SNTP_NUM_SERVERS > 2
+            config SNTP_TIME_SERVER3
+                string "SNTP server 3 name"
+                default "ca.pool.ntp.org"
+                help
+                    Hostname of the tertiary SNTP server.
+        endif
+
+        config SNTP_RESYNC_INTERVAL
+            int "Resync interval in seconds"
+            range 1 604800
+            default 30
+            help
+                The number of seconds to wait before resyncing with the time server
+
+        choice SNTP_TIME_SYNC_METHOD
+            prompt "Time synchronization method"
+            default SNTP_TIME_SYNC_METHOD_IMMED
+            help
+                Time synchronization method.
+
+            config SNTP_TIME_SYNC_METHOD_IMMED
+                bool "update time immediately when received"
+            config SNTP_TIME_SYNC_METHOD_SMOOTH
+                bool "update time with smooth method (adjtime)"
+        endchoice
+    endif # SYNC_TIME
+endmenu
