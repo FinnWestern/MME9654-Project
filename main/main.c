@@ -20,7 +20,7 @@
 #include "esp_spiffs.h"
 #include "esp_http_server.h"
 #include "wifi_station.h"
-#include "enviro_sensor.h"
+#include "cJSON.h"
 
 static const char *TAG = "example";
 
@@ -40,7 +40,21 @@ static const char *TAG = "example";
 
 #define INDEX_HTML_PATH "/spiffs/index.html"
 
+#define NUM_PCHL_SLICES     3
+
 // Global variables
+
+typedef struct {
+    int address;
+    float pHSetpoint;
+    float currentPH;
+    float Kp;
+    float Ki;
+    float Kd;
+} PHCL_t;      // Structures for managing the data from each PHCL Slice
+
+PHCL_t PHCL[NUM_PCHL_SLICES];
+
 static char index_html[4096];
 static float pressure = 101.2;                                 // Pressure from BME280
 static float temperature = 22.3;                              // Temperature from BME280
@@ -221,8 +235,8 @@ static void send_async(void *arg)
     memset(buff, 0, sizeof(buff));
     // format JSON data
 #ifdef CONFIG_SYNC_TIME
-    sprintf(buff, "{\"state\": \"%s\", \"pres\": %.2f, \"temp\": %.2f, \"hum\": %.2f, \"time\": \"%02d:%02d:%02d\"}",
-            enabled ? "ON" : "OFF", pressure, temperature, humidity,
+    sprintf(buff, "{\"state\": \"%s\", \"pH0\": %.2f, \"pH1\": %.2f, \"pH2\": %.2f, \"time\": \"%02d:%02d:%02d\"}",
+            enabled ? "ON" : "OFF", PHCL[0].currentPH, PHCL[1].currentPH, PHCL[2].currentPH,
             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 #else
 //    sprintf(buff, "{\"state\": \"%s\", \"pres\": %.2f, \"temp\": %.2f, \"hum\": %.2f, \"time\": \"00:00:00\"}",
@@ -251,19 +265,21 @@ static esp_err_t handle_http_get(httpd_req_t *req)
 
 static esp_err_t handle_ws_req(httpd_req_t *req)
 {
-    enabled = !enabled;
+    //enabled = !enabled;
 
     httpd_ws_frame_t ws_pkt;
-    uint8_t buff[16];
+    uint8_t buff[64];
     memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
     ws_pkt.payload = buff;
     ws_pkt.type = HTTPD_WS_TYPE_BINARY;
 
     httpd_ws_recv_frame(req, &ws_pkt, sizeof(buff));
 
+    ESP_LOGI(TAG, "%s", ws_pkt.payload);
+
     if (!enabled)
     {
-        httpd_queue_work(server, send_async, NULL);
+        //httpd_queue_work(server, send_async, NULL);
     }
     return ESP_OK;
 }
@@ -307,13 +323,13 @@ static void start_server(void)
     }
 }
 
-static void update_reading(float pres, float temp, float hum)
+static void update_reading()
 {
-    pressure = pres;
-    temperature = temp;
-    humidity = hum;
+    PHCL[0].currentPH = 3.45;
+    PHCL[1].currentPH = 4.23;
+    PHCL[2].currentPH = 1.32;
 
-    ESP_LOGI(TAG, "Pressure: %.2f kPa, Temperature: %.2f C, Humidity: %.2f", pressure, temperature, humidity);
+    ESP_LOGI(TAG, "pH 0: %.2f, pH 1: %.2f, pH 2: %.2f", PHCL[0].currentPH, PHCL[1].currentPH, PHCL[2].currentPH);
     if (server != NULL && enabled)
     {
         httpd_queue_work(server, send_async, NULL);
@@ -322,6 +338,13 @@ static void update_reading(float pres, float temp, float hum)
 
 void app_main(void)
 {
+    for(int i=0;i<NUM_PCHL_SLICES;i++){
+        PHCL[i].address = 10+i;     // I2C addresses 10+
+        PHCL[i].pHSetpoint = 7;     // default setpoint to start
+        PHCL[i].Kp = 0;             // zero PID tunings
+        PHCL[i].Ki = 0;
+        PHCL[i].Kd = 0;
+    }
     init_html();
 
     wifi_sta_params_t p = {
@@ -332,7 +355,7 @@ void app_main(void)
     xTaskCreate(&station_task, "station_task", 4096, (void *) p.sta, 5, NULL);
     start_server();
     while(1){
-        update_reading(101.2, 22.3, 33.4);
+        update_reading();
         vTaskDelay(500 / portTICK_PERIOD_MS);
     }
     //enviro_sensor_init(update_reading, 5000);
