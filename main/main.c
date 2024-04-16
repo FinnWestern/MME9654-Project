@@ -415,7 +415,19 @@ static esp_err_t handle_ws_req(httpd_req_t *req)
         PHCL[int1].Ki = float_values[2];
         PHCL[int1].Kd = float_values[3];
 
-        
+        FLOATUNION_t float_union[4];
+        for(int i=0;i<4;i++) float_union[i].number = float_values[i];
+
+        uint8_t write_buff[17];
+
+        write_buff[0] = 1;  // id of pH controller on Slice
+        for(int i=0;i<4;i++){
+            for(int j=0;j<4;j++){
+                write_buff[i*4+j+1] = float_union[i].bytes[j];
+            }
+        }
+
+        i2c_master_write_to_device(I2C_MASTER_NUM, int1+10, write_buff, sizeof(write_buff), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
     }
 
     if (!enabled)
