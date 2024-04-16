@@ -55,7 +55,7 @@ typedef struct {
 
 PHCL_t PHCL[NUM_PCHL_SLICES];
 
-static char index_html[4096];
+static char index_html[8192];
 static float pressure = 101.2;                                 // Pressure from BME280
 static float temperature = 22.3;                              // Temperature from BME280
 static float humidity = 33.4;                                 // Humidity from BME280
@@ -270,12 +270,52 @@ static esp_err_t handle_ws_req(httpd_req_t *req)
     httpd_ws_frame_t ws_pkt;
     uint8_t buff[64];
     memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
+    memset(buff, 0, sizeof(buff));
     ws_pkt.payload = buff;
     ws_pkt.type = HTTPD_WS_TYPE_BINARY;
 
     httpd_ws_recv_frame(req, &ws_pkt, sizeof(buff));
 
     ESP_LOGI(TAG, "%s", ws_pkt.payload);
+
+    char data_byte[32];
+    for(int i=0; i<sizeof(data_byte); i++){
+        data_byte[i] = (char)ws_pkt.payload[i];
+    }
+    ESP_LOGI(TAG, "%s", data_byte);
+
+    int last_index = 4;     // start after id and first int
+    char id = data_byte[0];
+    ESP_LOGI(TAG, "%d", id);
+    int int1 = data_byte[2] - 48;   // subtract ASCII '0' to get int value
+    ESP_LOGI(TAG, "%d",int1);
+
+    float float_values[4];
+    int float_num = 0;
+    if(id == 'P'){
+        char temp[8];
+        for(int i=4; i<sizeof(data_byte);i++){
+            if(data_byte[i] == ','){
+                float_values[float_num] = atof(temp);
+                last_index = i+1; // 8
+                memset(temp, 0, sizeof(temp));
+                ESP_LOGI(TAG, "%.2f", float_values[float_num]);
+                float_num++;
+            }else{
+                temp[i-last_index] = data_byte[i];
+            }
+        }
+    }
+    if(id == 'S'){
+        enabled = int1;
+        httpd_queue_work(server, send_async, NULL);
+    }
+    if(id == 'P'){
+        PHCL[int1].pHSetpoint = float_values[0];
+        PHCL[int1].Kp = float_values[1];
+        PHCL[int1].Ki = float_values[2];
+        PHCL[int1].Kd = float_values[3];
+    }
 
     if (!enabled)
     {
@@ -329,9 +369,11 @@ static void update_reading()
     PHCL[1].currentPH = 4.23;
     PHCL[2].currentPH = 1.32;
 
-    ESP_LOGI(TAG, "pH 0: %.2f, pH 1: %.2f, pH 2: %.2f", PHCL[0].currentPH, PHCL[1].currentPH, PHCL[2].currentPH);
     if (server != NULL && enabled)
     {
+        ESP_LOGI(TAG, "PID0: %.2f, %.2f, %.2f, %.2f, pH0: %.2f", PHCL[0].pHSetpoint, PHCL[0].Kp, PHCL[0].Ki, PHCL[0].Kd, PHCL[0].currentPH);
+        ESP_LOGI(TAG, "PID1: %.2f, %.2f, %.2f, %.2f, pH1: %.2f", PHCL[1].pHSetpoint, PHCL[1].Kp, PHCL[1].Ki, PHCL[1].Kd, PHCL[1].currentPH);
+        ESP_LOGI(TAG, "PID2: %.2f, %.2f, %.2f, %.2f, pH2: %.2f", PHCL[2].pHSetpoint, PHCL[2].Kp, PHCL[2].Ki, PHCL[2].Kd, PHCL[2].currentPH);
         httpd_queue_work(server, send_async, NULL);
     }
 }
@@ -356,7 +398,7 @@ void app_main(void)
     start_server();
     while(1){
         update_reading();
-        vTaskDelay(500 / portTICK_PERIOD_MS);
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
     //enviro_sensor_init(update_reading, 5000);
 }

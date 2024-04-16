@@ -38,8 +38,56 @@
         ">Send</button>
       </div>
 
-      <div class="gauge">pH 1: <span id="pH1">%pH1%</span></div>
-      <div class="gauge">pH 2: <span id="pH2">%pH2%</span></div>
+      <div class="gauge">
+        pH 1: <span id="pH1">%pH1%</span>
+        <form>
+          <label for="Sp1">Setpoint:</label>
+          <input type="number" step="0.01" id="Sp1" name="Sp1">
+        </form>
+        <form>
+          <label for="Kp1">Kp:</label>
+          <input type="number" step="0.01" id="Kp1" name="Kp1">
+        </form>
+        <form>
+          <label for="Ki1">Ki:</label>
+          <input type="number" step="0.01" id="Ki1" name="Ki1">
+        </form>
+        <form>
+          <label for="Kd1">Kd:</label>
+          <input type="number" step="0.01" id="Kd1" name="Kd1">
+        </form>
+        <button id="PID1" onclick="
+          pH_gauge_info['pH1'].setpoint = parseFloat(document.getElementById('Sp1').value);
+          pH_gauge_info['pH1'].Kp = parseFloat(document.getElementById('Kp1').value);
+          pH_gauge_info['pH1'].Ki = parseFloat(document.getElementById('Ki1').value);
+          pH_gauge_info['pH1'].Kd = parseFloat(document.getElementById('Kd1').value);
+        ">Send</button>
+      </div>
+      <div class="gauge">
+        pH 2: <span id="pH2">%pH2%</span>
+        <form>
+          <label for="Sp2">Setpoint:</label>
+          <input type="number" step="0.01" id="Sp2" name="Sp2">
+        </form>
+        <form>
+          <label for="Kp2">Kp:</label>
+          <input type="number" step="0.01" id="Kp2" name="Kp2">
+        </form>
+        <form>
+          <label for="Ki2">Ki:</label>
+          <input type="number" step="0.01" id="Ki2" name="Ki2">
+        </form>
+        <form>
+          <label for="Kd2">Kd:</label>
+          <input type="number" step="0.01" id="Kd2" name="Kd2">
+        </form>
+        <button id="PID2" onclick="
+          pH_gauge_info['pH2'].setpoint = parseFloat(document.getElementById('Sp2').value);
+          pH_gauge_info['pH2'].Kp = parseFloat(document.getElementById('Kp2').value);
+          pH_gauge_info['pH2'].Ki = parseFloat(document.getElementById('Ki2').value);
+          pH_gauge_info['pH2'].Kd = parseFloat(document.getElementById('Kd2').value);
+        ">Send</button>
+      </div>
       <div class="update">Updated: <span id="time">%TIME%</span></div>
     </div>
   </div>
@@ -105,18 +153,41 @@
   function onLoad(event) {
     initWs();
     document.getElementById('button').addEventListener('click', function() {
-    	websocket.send(++toggle);
-      console.log('button click ' + toggle);
+      toggle ^= 1;
+    	websocket.send('S,' + toggle);
+      console.log('S,' + toggle);
     });
     document.getElementById('PID0').addEventListener('click', function() {
-      let id = "P0";
+      let id = "0";
       let Setpoint = pH_gauge_info['pH0'].setpoint;
       let Kp = pH_gauge_info['pH0'].Kp;
       let Ki = pH_gauge_info['pH0'].Ki;
       let Kd = pH_gauge_info['pH0'].Kd;
-      let data = id + ',' + Setpoint + ',' + Kp + ',' + Ki + ',' + Kd;
-      console.log(data);
-      websocket.send(data);
+      let data = id + ',' + Setpoint + ',' + Kp + ',' + Ki + ',' + Kd + ',';
+      console.log('P,' + data);
+      websocket.send('P,' + data);
+    });
+
+    document.getElementById('PID1').addEventListener('click', function() {
+      let id = "1";
+      let Setpoint = pH_gauge_info['pH1'].setpoint;
+      let Kp = pH_gauge_info['pH1'].Kp;
+      let Ki = pH_gauge_info['pH1'].Ki;
+      let Kd = pH_gauge_info['pH1'].Kd;
+      let data = id + ',' + Setpoint + ',' + Kp + ',' + Ki + ',' + Kd + ',';
+      console.log('P,' + data);
+      websocket.send('P,' + data);
+    });
+
+    document.getElementById('PID2').addEventListener('click', function() {
+      let id = "2";
+      let Setpoint = pH_gauge_info['pH2'].setpoint;
+      let Kp = pH_gauge_info['pH2'].Kp;
+      let Ki = pH_gauge_info['pH2'].Ki;
+      let Kd = pH_gauge_info['pH2'].Kd;
+      let data = id + ',' + Setpoint + ',' + Kp + ',' + Ki + ',' + Kd + ',';
+      console.log('P,' + data);
+      websocket.send('P,' + data);
     });
   }
 </script>
