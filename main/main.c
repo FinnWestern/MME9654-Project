@@ -25,6 +25,11 @@
 #include "driver/rmt_tx.h"
 #include "led_strip.h"
 
+#include <sys/unistd.h>
+#include <sys/stat.h>
+#include "esp_vfs_fat.h"
+#include "sdmmc_cmd.h"
+
 static const char *TAG = "example";
 
 #define EXAMPLE_UPDATE_INTERVAL  CONFIG_UPDATE_INTERVAL
@@ -42,6 +47,16 @@ static const char *TAG = "example";
 #endif
 
 #define INDEX_HTML_PATH "/spiffs/index.html"
+
+#define MOUNT_POINT "/sdcard"
+
+// Pin assignments can be set in menuconfig, see "Lab 4 Example Configuration" menu.
+// You can also change the pin assignments here by changing the following 5 lines.
+
+#define PIN_NUM_MISO         41
+#define PIN_NUM_MOSI         40
+#define PIN_NUM_CLK          39
+#define PIN_NUM_CS           38
 
 #define NUM_PCHL_SLICES     3
 
@@ -70,6 +85,7 @@ static int ws_fd = -1;
 
 #ifdef CONFIG_SYNC_TIME
 static bool sntp_initialized = false;
+char strftime_buf[64];
 
 // GPIO assignment
 #define LED_STRIP_BLINK_GPIO  48
@@ -168,10 +184,9 @@ static void station_task(void *pvParameters)
 {
     esp_netif_t *sta = (esp_netif_t *) pvParameters;
 #ifdef CONFIG_SYNC_TIME
-    time_t now = 0;
     struct tm timeinfo = { 0 };
     time_t last_resync = 0;
-    char strftime_buf[64];
+    time_t now = 0;
 #endif
     esp_netif_ip_info_t ip;
     memset(&ip, 0, sizeof(esp_netif_ip_info_t));
@@ -456,7 +471,93 @@ void app_main(void)
     ESP_ERROR_CHECK(init_wifi_sta(&p));
     xTaskCreate(&station_task, "station_task", 4096, (void *) p.sta, 5, NULL);
     start_server();
+
+// ------------------------------SD CARD------------------------------------
+    FILE *f;
+    esp_err_t ret;
+
+    // Options for mounting the filesystem.
+    // If format_if_mount_failed is set to true, SD card will be partitioned and
+    // formatted in case when mounting fails.
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+#ifdef CONFIG_EXAMPLE_FORMAT_IF_MOUNT_FAILED
+        .format_if_mount_failed = true,
+#else
+        .format_if_mount_failed = false,
+#endif // EXAMPLE_FORMAT_IF_MOUNT_FAILED
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024
+    };
+    sdmmc_card_t *card;
+    const char mount_point[] = MOUNT_POINT;
+    ESP_LOGI(TAG, "Initializing SD card");
+
+    // Use settings defined above to initialize SD card and mount FAT filesystem.
+    // Note: esp_vfs_fat_sdmmc/sdspi_mount is all-in-one convenience functions.
+    // Please check its source code and implement error recovery when developing
+    // production applications.
+    ESP_LOGI(TAG, "Using SPI peripheral");
+
+    // By default, SD card frequency is initialized to SDMMC_FREQ_DEFAULT (20MHz)
+    // For setting a specific frequency, use host.max_freq_khz (range 400kHz - 20MHz for SDSPI)
+    // Example: for fixed frequency of 10MHz, use host.max_freq_khz = 10000;
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+
+    spi_bus_config_t bus_cfg = {
+        .mosi_io_num = PIN_NUM_MOSI,
+        .miso_io_num = PIN_NUM_MISO,
+        .sclk_io_num = PIN_NUM_CLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4000,
+    };
+    
+    ret = spi_bus_initialize(host.slot, &bus_cfg, SDSPI_DEFAULT_DMA);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize bus.");
+        return;
+    }
+
+    // This initializes the slot without card detect (CD) and write protect (WP) signals.
+    // Modify slot_config.gpio_cd and slot_config.gpio_wp if your board has these signals.
+    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot_config.gpio_cs = PIN_NUM_CS;
+    slot_config.host_id = host.slot;
+
+    ESP_LOGI(TAG, "Mounting filesystem");
+    ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &card);
+
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount filesystem. "
+                    "If you want the card to be formatted, set the CONFIG_EXAMPLE_FORMAT_IF_MOUNT_FAILED menuconfig option.");
+        } 
+        else {
+            ESP_LOGE(TAG, "Failed to initialize the card (%s). "
+                    "Make sure SD card lines have pull-up resistors in place.", esp_err_to_name(ret));
+        }
+        return;
+    }
+    ESP_LOGI(TAG, "Filesystem mounted");
+
+    // Card has been initialized, print its properties
+    sdmmc_card_print_info(stdout, card);
+
+    // Create a file
+    const char *data_file = MOUNT_POINT"/foo.csv";
+
+    // Open file for writing
+    ESP_LOGI(TAG, "Writing header to %s", data_file);
+    f = fopen(data_file, "w");  // Create new file, overwriting existing
+    fprintf(f, "\nTime,pH0,pH1,pH2\n");    // print header
+    fclose(f);
+    ESP_LOGI(TAG, "File written");
+
+// ------------------------------SD CARD------------------------------------
+
     while(1){
+        update_reading();
+
         if(enabled && sdLog){     // toggle blue
             ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 0,  //green
                                                               0,  //red
@@ -484,7 +585,23 @@ void app_main(void)
                                                               0));  //blue
             ESP_ERROR_CHECK(led_strip_refresh(led_strip));
         }
-        update_reading();
+
+        if(sdLog){
+            // Open file for writing
+            f = fopen(data_file, "a");  // Add to existing file
+            if (f == NULL) {
+                ESP_LOGE(TAG, "Failed to open file for writing");
+                return;
+            }
+
+            // Write data to SD card        
+            fprintf(f, "%s, %.2f, %.2f, %.2f\n", strftime_buf, PHCL[0].currentPH, PHCL[1].currentPH, PHCL[2].currentPH);
+
+            // Close file
+            fclose(f);
+            ESP_LOGI(TAG, "File written");
+        }
+
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
     //enviro_sensor_init(update_reading, 5000);
