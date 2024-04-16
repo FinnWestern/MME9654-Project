@@ -30,6 +30,8 @@
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 
+#include "driver/i2c.h"
+
 static const char *TAG = "example";
 
 #define EXAMPLE_UPDATE_INTERVAL  CONFIG_UPDATE_INTERVAL
@@ -62,6 +64,12 @@ static const char *TAG = "example";
 
 // Global variables
 
+typedef union //Define a float that can be broken up and sent via I2C
+{
+  float number;
+  uint8_t bytes[4];
+} FLOATUNION_t;
+
 typedef struct {
     int address;
     float pHSetpoint;
@@ -86,6 +94,33 @@ static int ws_fd = -1;
 #ifdef CONFIG_SYNC_TIME
 static bool sntp_initialized = false;
 char strftime_buf[64];
+
+// I2C
+#define I2C_MASTER_SCL_IO           2      /*!< GPIO number used for I2C master clock */
+#define I2C_MASTER_SDA_IO           1      /*!< GPIO number used for I2C master data  */
+#define I2C_MASTER_NUM              0                          /*!< I2C master i2c port number, the number of i2c peripheral interfaces available will depend on the chip */
+#define I2C_MASTER_FREQ_HZ          100000                     /*!< I2C master clock frequency */
+#define I2C_MASTER_TX_BUF_DISABLE   0                          /*!< I2C master doesn't need buffer */
+#define I2C_MASTER_RX_BUF_DISABLE   0                          /*!< I2C master doesn't need buffer */
+#define I2C_MASTER_TIMEOUT_MS       1000
+
+static esp_err_t i2c_master_init(void)
+{
+    int i2c_master_port = I2C_MASTER_NUM;
+
+    i2c_config_t conf = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = I2C_MASTER_SDA_IO,
+        .scl_io_num = I2C_MASTER_SCL_IO,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = I2C_MASTER_FREQ_HZ,
+    };
+
+    i2c_param_config(i2c_master_port, &conf);
+
+    return i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
+}
 
 // GPIO assignment
 #define LED_STRIP_BLINK_GPIO  48
@@ -379,6 +414,8 @@ static esp_err_t handle_ws_req(httpd_req_t *req)
         PHCL[int1].Kp = float_values[1];
         PHCL[int1].Ki = float_values[2];
         PHCL[int1].Kd = float_values[3];
+
+        
     }
 
     if (!enabled)
@@ -429,9 +466,15 @@ static void start_server(void)
 
 static void update_reading()
 {
-    PHCL[0].currentPH = 3.45;
-    PHCL[1].currentPH = 4.23;
-    PHCL[2].currentPH = 1.32;
+    FLOATUNION_t float1, float2, float3;
+
+    i2c_master_read_from_device(I2C_MASTER_NUM, 0x0A, float1.bytes, 4, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    i2c_master_read_from_device(I2C_MASTER_NUM, 0x0B, float2.bytes, 4, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    i2c_master_read_from_device(I2C_MASTER_NUM, 0x0C, float3.bytes, 4, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+
+    PHCL[0].currentPH = float1.number;
+    PHCL[1].currentPH = float2.number;
+    PHCL[2].currentPH = float3.number;
 
     if (server != NULL && enabled)
     {
@@ -471,6 +514,10 @@ void app_main(void)
     ESP_ERROR_CHECK(init_wifi_sta(&p));
     xTaskCreate(&station_task, "station_task", 4096, (void *) p.sta, 5, NULL);
     start_server();
+
+//------------------------------I2C-----------------------------------
+    ESP_ERROR_CHECK(i2c_master_init());
+    ESP_LOGI(TAG, "I2C initialized successfully");
 
 // ------------------------------SD CARD------------------------------------
     FILE *f;
