@@ -5,13 +5,89 @@
   <meta charset="UTF-8" name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:,">
   <script src="https://cdn.plot.ly/plotly-2.30.0.min.js" charset="utf-8"></script>
+  <style>
+    html {
+        font-family: Arial, Helvetica, sans-serif;
+        text-align: center;
+    }
+    h1 {
+        font-size: 1.8rem;  
+        color: white;
+    }
+    h2{
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: #143642;
+    }
+    .topnav {
+        overflow: hidden;
+        background-color: #143642;
+    }
+    body {
+        margin: 0;
+    }
+    .content {
+        padding: 30px;
+        max-width: 600px;
+        margin: 0 auto;
+    }
+    .card {
+        background-color: #F8F7F9;;
+        box-shadow: 2px 2px 12px 1px rgba(140,140,140,.5);
+        padding-top:10px;
+        padding-bottom:20px;
+    }
+    .button {
+        padding: 10px 25px;
+        border: 5px;
+        font-size: 24px;
+        text-align: center;
+        outline: none;
+        color: #fff;
+        background-color: #4F2683;
+        border: none;
+        border-radius: 5px;
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        -khtml-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        user-select: none;
+        -webkit-tap-highlight-color: rgba(0,0,0,0);
+    }
+
+    .button:active {
+        background-color: #4F2683;
+        box-shadow: 2 2px #CDCDCD;
+        transform: translateY(2px);
+    }
+    .state {
+        font-size: 1.5rem;
+        color:#8c8c8c;
+        font-weight: bold;
+    }
+    .gauge {
+        font-size: 1.5rem;
+        color:#8c8c8c;
+        font-weight: bold;
+    }
+    .update {
+        margin-top: 5px;
+        font-size: 1rem;
+        font-style: italic;
+        color: #9a9a9a;
+        font-weight: normal;
+    }
+  </style>
 </head>
 <body>
   <div class="content">
     <div class="card">
+      <div class="update">Updated: <span id="time">%TIME%</span></div>
       <div class="state">State: <span id="state">%STATE%</span></div>
-      <div><button id="button" class="button">Toggle</button></div>
-
+      <div><button id="start" class="button">Toggle</button></div>
+      <div class="state">State: <span id="sdLog">%STATE%</span></div>
+      <div><button id="sdToggle" class="button">Toggle</button></div>
       <div class="gauge">
         pH 0: <span id="pH0">%pH0%</span>
         <form>
@@ -30,7 +106,7 @@
           <label for="Kd0">Kd:</label>
           <input type="number" step="0.01" id="Kd0" name="Kd0">
         </form>
-        <button id="PID0" onclick="
+        <button id="PID0" class='button' onclick="
           pH_gauge_info['pH0'].setpoint = parseFloat(document.getElementById('Sp0').value);
           pH_gauge_info['pH0'].Kp = parseFloat(document.getElementById('Kp0').value);
           pH_gauge_info['pH0'].Ki = parseFloat(document.getElementById('Ki0').value);
@@ -56,7 +132,7 @@
           <label for="Kd1">Kd:</label>
           <input type="number" step="0.01" id="Kd1" name="Kd1">
         </form>
-        <button id="PID1" onclick="
+        <button id="PID1" class='button' onclick="
           pH_gauge_info['pH1'].setpoint = parseFloat(document.getElementById('Sp1').value);
           pH_gauge_info['pH1'].Kp = parseFloat(document.getElementById('Kp1').value);
           pH_gauge_info['pH1'].Ki = parseFloat(document.getElementById('Ki1').value);
@@ -81,14 +157,13 @@
           <label for="Kd2">Kd:</label>
           <input type="number" step="0.01" id="Kd2" name="Kd2">
         </form>
-        <button id="PID2" onclick="
+        <button id="PID2" class='button' onclick="
           pH_gauge_info['pH2'].setpoint = parseFloat(document.getElementById('Sp2').value);
           pH_gauge_info['pH2'].Kp = parseFloat(document.getElementById('Kp2').value);
           pH_gauge_info['pH2'].Ki = parseFloat(document.getElementById('Ki2').value);
           pH_gauge_info['pH2'].Kd = parseFloat(document.getElementById('Kd2').value);
         ">Send</button>
       </div>
-      <div class="update">Updated: <span id="time">%TIME%</span></div>
     </div>
   </div>
 <script>
@@ -126,6 +201,7 @@
   var websocket;
   var wscnt=0;
   var toggle=0;
+  var toggle_sd=0;
   window.addEventListener('load', onLoad);
 
   function initWs() {
@@ -145,6 +221,7 @@
     console.log(event.data);
     var res = JSON.parse(event.data);
     document.getElementById('state').innerHTML = res.state;
+    document.getElementById('sdLog').innerHTML = res.sdLog;
     document.getElementById('pH0').innerHTML = res.pH0.toFixed(2);
     document.getElementById('pH1').innerHTML = res.pH1.toFixed(2);
     document.getElementById('pH2').innerHTML = res.pH2.toFixed(2);
@@ -152,10 +229,15 @@
   }
   function onLoad(event) {
     initWs();
-    document.getElementById('button').addEventListener('click', function() {
+    document.getElementById('start').addEventListener('click', function() {
       toggle ^= 1;
     	websocket.send('S,' + toggle);
       console.log('S,' + toggle);
+    });
+    document.getElementById('sdToggle').addEventListener('click', function() {
+      toggle_sd ^= 1;
+    	websocket.send('D,' + toggle_sd);
+      console.log('D,' + toggle_sd);
     });
     document.getElementById('PID0').addEventListener('click', function() {
       let id = "0";

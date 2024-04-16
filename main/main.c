@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <math.h>
 #include <sys/time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -20,7 +21,9 @@
 #include "esp_spiffs.h"
 #include "esp_http_server.h"
 #include "wifi_station.h"
-#include "cJSON.h"
+
+#include "driver/rmt_tx.h"
+#include "led_strip.h"
 
 static const char *TAG = "example";
 
@@ -55,17 +58,54 @@ typedef struct {
 
 PHCL_t PHCL[NUM_PCHL_SLICES];
 
-static char index_html[8192];
+static char index_html[16384];
 static float pressure = 101.2;                                 // Pressure from BME280
 static float temperature = 22.3;                              // Temperature from BME280
 static float humidity = 33.4;                                 // Humidity from BME280
 static bool enabled = false;
+static bool sdLog = false;
 
 static httpd_handle_t server = NULL;
 static int ws_fd = -1;
 
 #ifdef CONFIG_SYNC_TIME
 static bool sntp_initialized = false;
+
+// GPIO assignment
+#define LED_STRIP_BLINK_GPIO  48
+// Numbers of the LED in the strip
+#define LED_STRIP_LED_NUMBERS 1
+// 10MHz resolution, 1 tick = 0.1us (led strip needs a high resolution)
+#define LED_STRIP_RMT_RES_HZ  (10 * 1000 * 1000)
+
+led_strip_handle_t configure_led(void)
+{
+    // LED strip general initialization, according to your led board design
+    led_strip_config_t strip_config = {
+        .strip_gpio_num = LED_STRIP_BLINK_GPIO,   // The GPIO that connected to the LED strip's data line
+        .max_leds = LED_STRIP_LED_NUMBERS,        // The number of LEDs in the strip,
+        .led_pixel_format = LED_PIXEL_FORMAT_GRB, // Pixel format of your LED strip
+        .led_model = LED_MODEL_WS2812,            // LED strip model
+        .flags.invert_out = false,                // whether to invert the output signal
+    };
+
+    // LED strip backend configuration: RMT
+    led_strip_rmt_config_t rmt_config = {
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0, 0)
+        .rmt_channel = 0,
+#else
+        .clk_src = RMT_CLK_SRC_DEFAULT,        // different clock source can lead to different power consumption
+        .resolution_hz = LED_STRIP_RMT_RES_HZ, // RMT counter clock frequency
+        .flags.with_dma = false,               // DMA feature is available on ESP target like ESP32-S3
+#endif
+    };
+
+    // LED Strip object handle
+    led_strip_handle_t led_strip;
+    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
+    ESP_LOGI(TAG, "Created LED strip object with RMT backend");
+    return led_strip;
+}
 
 void time_sync_notification_cb(struct timeval *tv)
 {
@@ -235,8 +275,8 @@ static void send_async(void *arg)
     memset(buff, 0, sizeof(buff));
     // format JSON data
 #ifdef CONFIG_SYNC_TIME
-    sprintf(buff, "{\"state\": \"%s\", \"pH0\": %.2f, \"pH1\": %.2f, \"pH2\": %.2f, \"time\": \"%02d:%02d:%02d\"}",
-            enabled ? "ON" : "OFF", PHCL[0].currentPH, PHCL[1].currentPH, PHCL[2].currentPH,
+    sprintf(buff, "{\"state\": \"%s\",\"sdLog\": \"%s\", \"pH0\": %.2f, \"pH1\": %.2f, \"pH2\": %.2f, \"time\": \"%02d:%02d:%02d\"}",
+            enabled ? "ON" : "OFF", sdLog ? "LOGGING..." : "OFF", PHCL[0].currentPH, PHCL[1].currentPH, PHCL[2].currentPH,
             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 #else
 //    sprintf(buff, "{\"state\": \"%s\", \"pres\": %.2f, \"temp\": %.2f, \"hum\": %.2f, \"time\": \"00:00:00\"}",
@@ -294,9 +334,14 @@ static esp_err_t handle_ws_req(httpd_req_t *req)
     int float_num = 0;
     if(id == 'P'){
         char temp[8];
+        float tempf;
         for(int i=4; i<sizeof(data_byte);i++){
             if(data_byte[i] == ','){
-                float_values[float_num] = atof(temp);
+                tempf = atof(temp);
+
+                if(!isnan(tempf)) float_values[float_num] = tempf;
+                else float_values[float_num] = 0;
+
                 last_index = i+1; // 8
                 memset(temp, 0, sizeof(temp));
                 ESP_LOGI(TAG, "%.2f", float_values[float_num]);
@@ -308,6 +353,10 @@ static esp_err_t handle_ws_req(httpd_req_t *req)
     }
     if(id == 'S'){
         enabled = int1;
+        httpd_queue_work(server, send_async, NULL);
+    }
+    if(id == 'D'){
+        sdLog = int1;
         httpd_queue_work(server, send_async, NULL);
     }
     if(id == 'P'){
@@ -380,6 +429,17 @@ static void update_reading()
 
 void app_main(void)
 {
+    int led_brightness = 50;    // brighness percentage (0-100%)
+    int onE = 0, onSD = 0, onBoth = 0;     // toggle variable
+
+    led_strip_handle_t led_strip = configure_led();
+
+    // Indicate initialization (orange)
+    ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 165 * led_brightness / 100,  //green
+                                                      255 * led_brightness / 100,  //red
+                                                      0));  //blue
+    ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+
     for(int i=0;i<NUM_PCHL_SLICES;i++){
         PHCL[i].address = 10+i;     // I2C addresses 10+
         PHCL[i].pHSetpoint = 7;     // default setpoint to start
@@ -397,6 +457,33 @@ void app_main(void)
     xTaskCreate(&station_task, "station_task", 4096, (void *) p.sta, 5, NULL);
     start_server();
     while(1){
+        if(enabled && sdLog){     // toggle blue
+            ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 0,  //green
+                                                              0,  //red
+                                                              255 * led_brightness * onBoth / 100));  //blue
+            ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+            onBoth ^= 1;    // toggle
+        }
+        else if(enabled){    // toggle red
+            ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 0,  //green
+                                                              255 * led_brightness * onE / 100,  //red
+                                                              0));  //blue
+            ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+            onE ^= 1;    // toggle
+        }
+        else if(sdLog){      // toggle green
+            ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 255 * led_brightness * onSD / 100,  //green
+                                                              0,  //red
+                                                              0));  //blue
+            ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+            onSD ^= 1;    // toggle
+        }
+        else{       // off
+            ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 0,  //green
+                                                              0,  //red
+                                                              0));  //blue
+            ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+        }
         update_reading();
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
