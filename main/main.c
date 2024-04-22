@@ -1,10 +1,11 @@
-/* WiFi station example with additions for WPA2 Enterprise
+/*
+    MME 9654 Project Code for ESP32-S3
 
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
+    This program runs a web page to update pH values from BREAD Slices, 
+    log data to an SD card, and accept user input to change the PID
+    tuning of each Slice.
 
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
+    Author: Finn Hafting
 */
 
 #include <string.h>
@@ -22,19 +23,19 @@
 #include "esp_http_server.h"
 #include "wifi_station.h"
 
-#include "driver/rmt_tx.h"
+#include "driver/rmt_tx.h"  // for LED 
 #include "led_strip.h"
 
-#include <sys/unistd.h>
+#include <sys/unistd.h>     // for SD card
 #include <sys/stat.h>
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 
-#include "driver/i2c.h"
+#include "driver/i2c.h"     // to send I2C data
 
-static const char *TAG = "example";
+static const char *TAG = "MME 9654 Project - pH Controller";
 
-#define EXAMPLE_UPDATE_INTERVAL  CONFIG_UPDATE_INTERVAL
+#define EXAMPLE_UPDATE_INTERVAL  CONFIG_UPDATE_INTERVAL     // how often to sync time with SNTP server
 
 #ifdef CONFIG_SYNC_TIME
 #define EXAMPLE_RESYNC_INTERVAL  CONFIG_SNTP_RESYNC_INTERVAL
@@ -48,21 +49,19 @@ static const char *TAG = "example";
 #define INET6_ADDRSTRLEN 48
 #endif
 
-#define INDEX_HTML_PATH "/spiffs/index.html"
+#define INDEX_HTML_PATH "/spiffs/index.html"    // HTML code for web page
 
 #define MOUNT_POINT "/sdcard"
 
-// Pin assignments can be set in menuconfig, see "Lab 4 Example Configuration" menu.
-// You can also change the pin assignments here by changing the following 5 lines.
-
+// Pin assignments for SPI SD card reader
 #define PIN_NUM_MISO         41
 #define PIN_NUM_MOSI         40
 #define PIN_NUM_CLK          39
 #define PIN_NUM_CS           38
 
-#define NUM_PCHL_SLICES     3
+// Variables for BREAD Slices
 
-// Global variables
+#define NUM_PCHL_SLICES     3   // number of pH controller Slices
 
 typedef union //Define a float that can be broken up and sent via I2C
 {
@@ -71,22 +70,19 @@ typedef union //Define a float that can be broken up and sent via I2C
 } FLOATUNION_t;
 
 typedef struct {
-    int address;
-    float pHSetpoint;
-    float currentPH;
-    float Kp;
-    float Ki;
-    float Kd;
+    int address;        // I2C address
+    float pHSetpoint;   // pH setpoint
+    float currentPH;    // current pH
+    float Kp;           // Kp value for PID control
+    float Ki;           // KI value for PID control
+    float Kd;           // KD value for PID control
 } PHCL_t;      // Structures for managing the data from each PHCL Slice
 
 PHCL_t PHCL[NUM_PCHL_SLICES];
 
-static char index_html[16384];
-static float pressure = 101.2;                                 // Pressure from BME280
-static float temperature = 22.3;                              // Temperature from BME280
-static float humidity = 33.4;                                 // Humidity from BME280
-static bool enabled = false;
-static bool sdLog = false;
+static char index_html[16384];  // buffer for writing web page data to SPIFFS
+static bool enabled = false;    // to set if data is being updated on web page
+static bool sdLog = false;      // to set it data is being logged to SD card
 
 static httpd_handle_t server = NULL;
 static int ws_fd = -1;
@@ -104,6 +100,7 @@ char strftime_buf[64];
 #define I2C_MASTER_RX_BUF_DISABLE   0                          /*!< I2C master doesn't need buffer */
 #define I2C_MASTER_TIMEOUT_MS       1000
 
+// for initializing I2C master
 static esp_err_t i2c_master_init(void)
 {
     int i2c_master_port = I2C_MASTER_NUM;
@@ -122,20 +119,18 @@ static esp_err_t i2c_master_init(void)
     return i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
 }
 
-// GPIO assignment
-#define LED_STRIP_BLINK_GPIO  48
-// Numbers of the LED in the strip
-#define LED_STRIP_LED_NUMBERS 1
-// 10MHz resolution, 1 tick = 0.1us (led strip needs a high resolution)
-#define LED_STRIP_RMT_RES_HZ  (10 * 1000 * 1000)
+#define LED_STRIP_BLINK_GPIO  48    // built in LED pid
+#define LED_STRIP_LED_NUMBERS 1     // number of LEDs in a strip (1 in this case)
+#define LED_STRIP_RMT_RES_HZ  (10 * 1000 * 1000)    // 10MHz resolution, 1 tick = 0.1us (led strip needs a high resolution)
 
+// configure built in LED
 led_strip_handle_t configure_led(void)
 {
     // LED strip general initialization, according to your led board design
     led_strip_config_t strip_config = {
         .strip_gpio_num = LED_STRIP_BLINK_GPIO,   // The GPIO that connected to the LED strip's data line
         .max_leds = LED_STRIP_LED_NUMBERS,        // The number of LEDs in the strip,
-        .led_pixel_format = LED_PIXEL_FORMAT_GRB, // Pixel format of your LED strip
+        .led_pixel_format = LED_PIXEL_FORMAT_GRB, // Pixel format of LED strip
         .led_model = LED_MODEL_WS2812,            // LED strip model
         .flags.invert_out = false,                // whether to invert the output signal
     };
@@ -158,12 +153,14 @@ led_strip_handle_t configure_led(void)
     return led_strip;
 }
 
+// notify serial port when time has been updated
 void time_sync_notification_cb(struct timeval *tv)
 {
     ESP_LOGI(TAG, "Time synchronized to server");
     sntp_initialized = true;
 }
 
+// print the current SNTP servers
 static void print_servers(void)
 {
     ESP_LOGI(TAG, "List of configured NTP servers:");
@@ -181,7 +178,7 @@ static void print_servers(void)
     }
 }
 
-// Obtain current time from STNP server
+// Obtain current time from SNTP server
 static void obtain_time(void)
 {
     ESP_LOGI(TAG, "Initializing and starting SNTP");
@@ -215,6 +212,7 @@ static void obtain_time(void)
 }
 #endif
 
+// function to update the current time with SNTP server
 static void station_task(void *pvParameters)
 {
     esp_netif_t *sta = (esp_netif_t *) pvParameters;
@@ -281,6 +279,7 @@ static void station_task(void *pvParameters)
     }
 }
 
+// initialize HTML web page
 static void init_html(void)
 {
     esp_vfs_spiffs_conf_t conf = {
@@ -307,6 +306,7 @@ static void init_html(void)
     fclose(fp);
 }
 
+// to send JSON string via websockets to web page
 static void send_async(void *arg)
 {
     if (ws_fd < 0)
@@ -322,9 +322,10 @@ static void send_async(void *arg)
 #endif
 
     char buff[128];
-    memset(buff, 0, sizeof(buff));
+    memset(buff, 0, sizeof(buff));  // set buffer array to zero
     // format JSON data
 #ifdef CONFIG_SYNC_TIME
+    // buffer string to send as JSON data to web page
     sprintf(buff, "{\"state\": \"%s\",\"sdLog\": \"%s\", \"pH0\": %.2f, \"pH1\": %.2f, \"pH2\": %.2f, \"time\": \"%02d:%02d:%02d\"}",
             enabled ? "ON" : "OFF", sdLog ? "LOGGING..." : "OFF", PHCL[0].currentPH, PHCL[1].currentPH, PHCL[2].currentPH,
             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
@@ -336,13 +337,14 @@ static void send_async(void *arg)
 
     httpd_ws_frame_t ws_pkt;
     memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
-    ws_pkt.payload = (uint8_t *)buff;
+    ws_pkt.payload = (uint8_t *)buff;   // configure websocket payload
     ws_pkt.len = strlen(buff);
     ws_pkt.type = HTTPD_WS_TYPE_TEXT;
 
-    httpd_ws_send_frame_async(server, ws_fd, &ws_pkt);
+    httpd_ws_send_frame_async(server, ws_fd, &ws_pkt);  // send websocket payload
 }
 
+// function for handling HTTP GET requests (setup HTML page)
 static esp_err_t handle_http_get(httpd_req_t *req)
 {
     if (index_html[0] == 0)
@@ -353,10 +355,10 @@ static esp_err_t handle_http_get(httpd_req_t *req)
     return httpd_resp_send(req, index_html, HTTPD_RESP_USE_STRLEN);
 }
 
+// for handling websocket requests
 static esp_err_t handle_ws_req(httpd_req_t *req)
 {
-    //enabled = !enabled;
-
+    // setup websocket packet
     httpd_ws_frame_t ws_pkt;
     uint8_t buff[64];
     memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
@@ -364,75 +366,71 @@ static esp_err_t handle_ws_req(httpd_req_t *req)
     ws_pkt.payload = buff;
     ws_pkt.type = HTTPD_WS_TYPE_BINARY;
 
-    httpd_ws_recv_frame(req, &ws_pkt, sizeof(buff));
+    httpd_ws_recv_frame(req, &ws_pkt, sizeof(buff));    // receive websocket packet
 
     ESP_LOGI(TAG, "%s", ws_pkt.payload);
 
     char data_byte[32];
     for(int i=0; i<sizeof(data_byte); i++){
-        data_byte[i] = (char)ws_pkt.payload[i];
+        data_byte[i] = (char)ws_pkt.payload[i];     // convert payload to char array
     }
     ESP_LOGI(TAG, "%s", data_byte);
 
-    int last_index = 4;     // start after id and first int
-    char id = data_byte[0];
-    ESP_LOGI(TAG, "%d", id);
-    int int1 = data_byte[2] - 48;   // subtract ASCII '0' to get int value
+    int last_index = 4;         // start translation after id and first int
+    char id = data_byte[0];     // message ID is first byte
+    ESP_LOGI(TAG, "%d", id);    
+    int int1 = data_byte[2] - 48;   // subtract ASCII '0' to get int value from second byte
     ESP_LOGI(TAG, "%d",int1);
 
     float float_values[4];
     int float_num = 0;
-    if(id == 'P'){
+    if(id == 'P'){      // data incoming is PID and setpoint values
         char temp[8];
         float tempf;
         for(int i=4; i<sizeof(data_byte);i++){
-            if(data_byte[i] == ','){
-                tempf = atof(temp);
+            if(data_byte[i] == ','){    // stop at separating character
+                tempf = atof(temp);     // translate previous bytes to floats
 
                 if(!isnan(tempf)) float_values[float_num] = tempf;
-                else float_values[float_num] = 0;
+                else float_values[float_num] = 0;       // assign float value to array
 
-                last_index = i+1; // 8
-                memset(temp, 0, sizeof(temp));
+                last_index = i+1;       // set index of start of next value after comma
+                memset(temp, 0, sizeof(temp));  // reset temp array for accepting new characters
                 ESP_LOGI(TAG, "%.2f", float_values[float_num]);
-                float_num++;
+                float_num++;    // increment float array
             }else{
-                temp[i-last_index] = data_byte[i];
+                temp[i-last_index] = data_byte[i];      // assign current character to array
             }
         }
     }
-    if(id == 'S'){
+    if(id == 'S'){      // data incoming is to set data update enable
         enabled = int1;
         httpd_queue_work(server, send_async, NULL);
     }
-    if(id == 'D'){
+    if(id == 'D'){      // data incoming is to set SD logging enable
         sdLog = int1;
         httpd_queue_work(server, send_async, NULL);
     }
-    if(id == 'P'){
+    if(id == 'P'){      // assign PID and setpoint values to Slice structures
         PHCL[int1].pHSetpoint = float_values[0];
         PHCL[int1].Kp = float_values[1];
         PHCL[int1].Ki = float_values[2];
         PHCL[int1].Kd = float_values[3];
 
         FLOATUNION_t float_union[4];
-        for(int i=0;i<4;i++) float_union[i].number = float_values[i];
+        for(int i=0;i<4;i++) float_union[i].number = float_values[i];   // write float values to float union
 
         uint8_t write_buff[17];
 
         write_buff[0] = 1;  // id of pH controller on Slice
         for(int i=0;i<4;i++){
             for(int j=0;j<4;j++){
-                write_buff[i*4+j+1] = float_union[i].bytes[j];
+                write_buff[i*4+j+1] = float_union[i].bytes[j];  // write individual bytes from float values to char array
             }
         }
 
+        // write char array to specific Slice indicated by int1
         i2c_master_write_to_device(I2C_MASTER_NUM, int1+10, write_buff, sizeof(write_buff), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
-    }
-
-    if (!enabled)
-    {
-        //httpd_queue_work(server, send_async, NULL);
     }
     return ESP_OK;
 }
@@ -451,6 +449,7 @@ static void handle_socket_closed(httpd_handle_t hd, int sockfd)
     }
 }
 
+// to configure server on startup
 static void start_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -476,14 +475,17 @@ static void start_server(void)
     }
 }
 
+// to gather pH readings from Slices
 static void update_reading()
 {
     FLOATUNION_t float1, float2, float3;
 
+    // request 4 bytes of data from each Slice
     i2c_master_read_from_device(I2C_MASTER_NUM, 0x0A, float1.bytes, 4, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
     i2c_master_read_from_device(I2C_MASTER_NUM, 0x0B, float2.bytes, 4, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
     i2c_master_read_from_device(I2C_MASTER_NUM, 0x0C, float3.bytes, 4, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
 
+    // assign Slice structure value to incoming float number
     PHCL[0].currentPH = float1.number;
     PHCL[1].currentPH = float2.number;
     PHCL[2].currentPH = float3.number;
@@ -493,14 +495,14 @@ static void update_reading()
         ESP_LOGI(TAG, "PID0: %.2f, %.2f, %.2f, %.2f, pH0: %.2f", PHCL[0].pHSetpoint, PHCL[0].Kp, PHCL[0].Ki, PHCL[0].Kd, PHCL[0].currentPH);
         ESP_LOGI(TAG, "PID1: %.2f, %.2f, %.2f, %.2f, pH1: %.2f", PHCL[1].pHSetpoint, PHCL[1].Kp, PHCL[1].Ki, PHCL[1].Kd, PHCL[1].currentPH);
         ESP_LOGI(TAG, "PID2: %.2f, %.2f, %.2f, %.2f, pH2: %.2f", PHCL[2].pHSetpoint, PHCL[2].Kp, PHCL[2].Ki, PHCL[2].Kd, PHCL[2].currentPH);
-        httpd_queue_work(server, send_async, NULL);
+        httpd_queue_work(server, send_async, NULL); // if data update is enabled, update web page with new data
     }
 }
 
 void app_main(void)
 {
     int led_brightness = 50;    // brighness percentage (0-100%)
-    int onE = 0, onSD = 0, onBoth = 0;     // toggle variable
+    int onE = 0, onSD = 0, onBoth = 0;     // LED toggle variables
 
     led_strip_handle_t led_strip = configure_led();
 
@@ -510,6 +512,7 @@ void app_main(void)
                                                       0));  //blue
     ESP_ERROR_CHECK(led_strip_refresh(led_strip));
 
+    // assign default values in pH Slice structures
     for(int i=0;i<NUM_PCHL_SLICES;i++){
         PHCL[i].address = 10+i;     // I2C addresses 10+
         PHCL[i].pHSetpoint = 7;     // default setpoint to start
@@ -517,15 +520,16 @@ void app_main(void)
         PHCL[i].Ki = 0;
         PHCL[i].Kd = 0;
     }
-    init_html();
+    init_html();    // configure web page
 
+    // configure WiFi
     wifi_sta_params_t p = {
         .sta = NULL
     };
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     ESP_ERROR_CHECK(init_wifi_sta(&p));
     xTaskCreate(&station_task, "station_task", 4096, (void *) p.sta, 5, NULL);
-    start_server();
+    start_server();     // start web server
 
 //------------------------------I2C-----------------------------------
     ESP_ERROR_CHECK(i2c_master_init());
@@ -603,19 +607,19 @@ void app_main(void)
     sdmmc_card_print_info(stdout, card);
 
     // Create a file
-    const char *data_file = MOUNT_POINT"/foo.csv";
+    const char *data_file = MOUNT_POINT"/pHData.csv";
 
     // Open file for writing
     ESP_LOGI(TAG, "Writing header to %s", data_file);
     f = fopen(data_file, "w");  // Create new file, overwriting existing
-    fprintf(f, "\nTime,pH0,pH1,pH2\n");    // print header
+    fprintf(f, "\nTime,pH0,pH1,pH2\n");    // write header to SD card
     fclose(f);
     ESP_LOGI(TAG, "File written");
 
-// ------------------------------SD CARD------------------------------------
+// ------------------------ TO RUN CONTINUOUSLY ---------------------------
 
     while(1){
-        update_reading();
+        update_reading();   // update webpage with Slice pH readings
 
         if(enabled && sdLog){     // toggle blue
             ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 0,  //green
@@ -645,6 +649,7 @@ void app_main(void)
             ESP_ERROR_CHECK(led_strip_refresh(led_strip));
         }
 
+        // if logging is enabled, write to SD card
         if(sdLog){
             // Open file for writing
             f = fopen(data_file, "a");  // Add to existing file
@@ -653,7 +658,7 @@ void app_main(void)
                 return;
             }
 
-            // Write data to SD card        
+            // Write pH data to SD card        
             fprintf(f, "%s, %.2f, %.2f, %.2f\n", strftime_buf, PHCL[0].currentPH, PHCL[1].currentPH, PHCL[2].currentPH);
 
             // Close file
@@ -661,7 +666,6 @@ void app_main(void)
             ESP_LOGI(TAG, "File written");
         }
 
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        vTaskDelay(1000 / portTICK_PERIOD_MS);  // repeat every second
     }
-    //enviro_sensor_init(update_reading, 5000);
 }
